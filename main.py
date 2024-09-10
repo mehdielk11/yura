@@ -25,7 +25,7 @@ class ReviewApp(QWidget):
         
         # Dropdown for month selection
         self.month_combo = QComboBox()
-        self.month_combo.addItems(['January', 'February', 'March', 'April', 'May', 'June', 
+        self.month_combo.addItems(['Select All', 'January', 'February', 'March', 'April', 'May', 'June', 
                                    'July', 'August', 'September', 'October', 'November', 'December'])
         self.month_combo.currentIndexChanged.connect(self.filter_data)
         layout.addWidget(self.month_combo)
@@ -48,6 +48,9 @@ class ReviewApp(QWidget):
         conn = sqlite3.connect('product_reviews.db')
         cursor = conn.cursor()
 
+        # Optionally clear existing data
+        cursor.execute('DELETE FROM Products')
+        
         # Insert each row into the Products table
         for index, row in df.iterrows():
             # Convert the review_date to string if it's a Timestamp
@@ -60,6 +63,7 @@ class ReviewApp(QWidget):
                 INSERT INTO Products (product_name, reference, review_date)
                 VALUES (?, ?, ?)
                 ''', (row['Product Name'], row['Reference'], review_date))
+                
             except KeyError as e:
                 print(f"Column not found: {e}")
             except Exception as e:
@@ -70,6 +74,7 @@ class ReviewApp(QWidget):
         conn.close()
 
         print(f"Data from {file_path} has been successfully imported.")
+
 
     def import_file(self):
         # File dialog to select Excel file
@@ -84,17 +89,25 @@ class ReviewApp(QWidget):
         self.display_filtered_products(selected_month)
     
     def display_filtered_products(self, month):
-        # Map month to number
-        month_number = pd.to_datetime(month, format='%B').month
-        
-        # Fetch data from database for the selected month
         conn = sqlite3.connect('product_reviews.db')
         cursor = conn.cursor()
-        cursor.execute('''
-        SELECT product_name, reference, review_date 
-        FROM Products
-        WHERE strftime('%m', review_date) = ?
-        ''', (f'{month_number:02d}',))
+
+        if month == 'Select All':
+            # Fetch all data from database
+            cursor.execute('''
+            SELECT product_name, reference, review_date 
+            FROM Products
+            ''')
+        else:
+            # Map month to number
+            month_number = pd.to_datetime(month, format='%B').month
+            
+            # Fetch data for the selected month
+            cursor.execute('''
+            SELECT product_name, reference, review_date 
+            FROM Products
+            WHERE strftime('%m', review_date) = ?
+            ''', (f'{month_number:02d}',))
         
         records = cursor.fetchall()
         conn.close()
