@@ -31,20 +31,24 @@ class ReviewApp(QWidget):
         
         self.table = QTableWidget()
         layout.addWidget(self.table)
-        
         self.setLayout(layout)
-
         self.set_current_month()
+        self.clear_table() # Clear the table on initialization
 
     def set_current_month(self):
         current_month_number = datetime.now().month
         self.month_combo.setCurrentIndex(current_month_number)
 
+    def clear_table(self):
+        self.table.setRowCount(0)
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(['Product Name', 'Reference', 'Review Date', 'Verified'])
+
     def import_excel_to_db(self, file_path):
         df = pd.read_excel(file_path, parse_dates=['Review Date'])
         
-        # Convert 'Review Date' to datetime format with dayfirst
-        df['Review Date'] = pd.to_datetime(df['Review Date'], dayfirst=True)
+        # Convert 'Review Date' to datetime format with dayfirst handling manually
+        df['Review Date'] = pd.to_datetime(df['Review Date'], format='%d/%m/%Y', errors='coerce')
         
         if 'Verified' not in df.columns:
             df['Verified'] = False
@@ -85,8 +89,14 @@ class ReviewApp(QWidget):
             self.excel_file_path = file_name
             self.import_excel_to_db(file_name)
             self.filter_data()
+        else:
+            self.clear_table()  # Clear the table if no file is selected
     
     def filter_data(self):
+        if not self.excel_file_path:
+            self.clear_table()  # Clear table if no file has been imported
+            return
+    
         selected_month = self.month_combo.currentText()
         self.display_filtered_products(selected_month)
 
