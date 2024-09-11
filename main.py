@@ -1,6 +1,5 @@
 import sys
 import os
-import functools
 from PyQt5.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, QLabel, QFileDialog, QComboBox, QTableWidget, QTableWidgetItem, QCheckBox
 from PyQt5.QtCore import Qt
 from openpyxl import load_workbook
@@ -13,7 +12,7 @@ class ReviewApp(QWidget):
     def __init__(self):
         super().__init__()
         self.excel_file_path = None
-        self.db_path = None  # Store the database path here
+        self.db_path = None
         self.setWindowTitle('Product Review Filter')
         self.setGeometry(100, 100, 600, 400)
         
@@ -37,24 +36,19 @@ class ReviewApp(QWidget):
         self.setLayout(layout)
         
         self.set_current_month()
-        self.clear_table()  # Clear the table on initialization
-        self.setup_database()  # Initialize the database
-
-
+        self.clear_table()
+        self.setup_database()
 
     def setup_database(self):
-        """Creates the database and the Products table if they don't exist."""
         app_data_path = os.path.join(os.getenv('LOCALAPPDATA'), 'ReviewApp')
-        os.makedirs(app_data_path, exist_ok=True)  # Create the directory if it doesn't exist
+        os.makedirs(app_data_path, exist_ok=True)
 
-        # Define the full path to the database file
         self.db_path = os.path.join(app_data_path, 'product_reviews.db')
 
         if not os.path.exists(self.db_path):
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
 
-            # Create Products table
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS Products (
                 product_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,8 +65,6 @@ class ReviewApp(QWidget):
         else:
             print("Database already exists. No setup needed.")
 
-
-
     def set_current_month(self):
         current_month_number = datetime.now().month
         self.month_combo.setCurrentIndex(current_month_number)
@@ -82,37 +74,57 @@ class ReviewApp(QWidget):
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(['Product Name', 'Reference', 'Review Date', 'Verified'])
 
-    def import_excel_to_db(self, file_path):
-        df = pd.read_excel(file_path, parse_dates=['Review Date'])
-        
-        # Convert 'Review Date' to datetime format with dayfirst handling manually
-        df['Review Date'] = pd.to_datetime(df['Review Date'], format='%d/%m/%Y', errors='coerce')
-        
-        if 'Verified' not in df.columns:
-            df['Verified'] = False
-        else:
-            df['Verified'] = df['Verified'].fillna(0).astype(int)  # Fill NaN values with 0 and ensure integer type
+    def detect_date_column(self, df):
+        for col in df.columns:
+            try:
+                parsed_dates = pd.to_datetime(df[col], format='%d/%m/%Y', errors='coerce')
+                if parsed_dates.notna().sum() / len(df) > 0.5:
+                    return col
+            except Exception as e:
+                print(f"Error detecting date column: {e}")
+        return None
 
-        
+    def import_excel_to_db(self, file_path):
+        df = pd.read_excel(file_path)
+
+        columns_map = self.detect_columns(df)
+
+        if not columns_map:
+            print("Required columns are missing in the Excel file.")
+            return
+
+        product_name_col = columns_map.get('product_name')
+        reference_col = columns_map.get('reference')
+        date_column = columns_map.get('date')
+        verified_col = columns_map.get('verified')
+
+        if not all([product_name_col, reference_col, date_column]):
+            print("Error: Essential columns are missing in the Excel file.")
+            return
+
+        df[date_column] = pd.to_datetime(df[date_column], format='%d/%m/%Y', errors='coerce')
+
+        if verified_col not in df.columns:
+            df[verified_col] = False
+        else:
+            df[verified_col] = df[verified_col].fillna(0).astype(int)
+
         self.excel_file_path = file_path
-        
-        # Use the correct database path here
+
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
         cursor.execute('DELETE FROM Products')
-        
+
         for index, row in df.iterrows():
-            review_date = row['Review Date'].strftime('%Y-%m-%d')  # Convert to 'YYYY-MM-DD' for SQLite storage
-            
-            verified = row['Verified'] if 'Verified' in row else 0
+            review_date = row[date_column].strftime('%Y-%m-%d') if pd.notnull(row[date_column]) else None
+            verified = row[verified_col] if verified_col in row else 0
 
             try:
                 cursor.execute('''
-                INSERT INTO Products (product_name, reference, review_date, verified)
-                VALUES (?, ?, ?, ?)
-                ''', (row['Product Name'], row['Reference'], review_date, verified))
-                
+                    INSERT INTO Products (product_name, reference, review_date, verified)
+                    VALUES (?, ?, ?, ?)
+                    ''', (row[product_name_col], row[reference_col], review_date, verified))
             except KeyError as e:
                 print(f"Column not found: {e}")
             except Exception as e:
@@ -123,7 +135,6 @@ class ReviewApp(QWidget):
 
         print(f"Data from {file_path} has been successfully imported.")
 
-
     def import_file(self):
         options = QFileDialog.Options()
         file_name, _ = QFileDialog.getOpenFileName(self, "Open Excel File", "", "Excel Files (*.xlsx)", options=options)
@@ -132,18 +143,17 @@ class ReviewApp(QWidget):
             self.import_excel_to_db(file_name)
             self.filter_data()
         else:
-            self.clear_table()  # Clear the table if no file is selected
-    
+            self.clear_table()
+
     def filter_data(self):
         if not self.excel_file_path:
-            self.clear_table()  # Clear table if no file has been imported
+            self.clear_table()
             return
-    
+
         selected_month = self.month_combo.currentText()
         self.display_filtered_products(selected_month)
 
     def display_filtered_products(self, month):
-        # Use the correct database path here
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
@@ -190,6 +200,36 @@ class ReviewApp(QWidget):
         self.update_excel_file(reference, verified)
         self.filter_data()
 
+    def detect_columns(self, df):
+        columns_map = {}
+        
+        df.columns = df.columns.str.strip()
+
+        for col in df.columns:
+            if df[col].dtype == object and df[col].str.len().max() > 5:
+                columns_map['product_name'] = col
+                break
+
+        for col in df.columns:
+            if df[col].dtype == object and df[col].str.match(r'^[A-Za-z0-9]+$').any():
+                columns_map['reference'] = col
+                break
+
+        for col in df.columns:
+            if df[col].dtype in [int, float] and df[col].dropna().isin([0, 1]).any():
+                columns_map['verified'] = col
+                break
+
+        if 'date' not in columns_map:
+            date_column = self.detect_date_column(df)
+            if date_column:
+                columns_map['date'] = date_column
+            else:
+                print("Error: No valid date column found.")
+                return None
+
+        return columns_map
+
     def update_excel_file(self, reference, verified):
         if not self.excel_file_path or not os.path.exists(self.excel_file_path):
             print("Excel file path not set or doesn't exist.")
@@ -199,23 +239,35 @@ class ReviewApp(QWidget):
             # Read the Excel file into a DataFrame
             df = pd.read_excel(self.excel_file_path)
 
-            # Convert 'Review Date' to datetime format with dayfirst handling manually
-            df['Review Date'] = pd.to_datetime(df['Review Date'], format='%d/%m/%Y', errors='coerce')
+            # Clean column names to avoid issues like extra spaces
+            df.columns = df.columns.str.strip()
 
-            # Ensure the 'Verified' column exists and fill missing values with 0
-            if 'Verified' not in df.columns:
-                df['Verified'] = 0  # Create 'Verified' column if it doesn't exist
-            else:
-                df['Verified'] = df['Verified'].fillna(0)  # Fill NaN values with 0
+            # Detect columns
+            columns_map = self.detect_columns(df)
             
-            # Convert the 'Verified' column to integers safely
-            df['Verified'] = df['Verified'].astype(int)
+            if not columns_map:
+                print("Error: Required columns are missing in the Excel file.")
+                return
+
+            # Extract column names using the map
+            product_name_col = columns_map.get('product_name')
+            reference_col = columns_map.get('reference')
+            date_column = columns_map.get('date')
+            verified_col = columns_map.get('verified')
+
+            # Verify if essential columns are present
+            if not all([product_name_col, reference_col, date_column, verified_col]):
+                print("Error: Essential columns are missing in the Excel file.")
+                return
+
+            # Convert the detected date column to datetime format
+            df[date_column] = pd.to_datetime(df[date_column], format='%d/%m/%Y', errors='coerce')
 
             # Update the 'Verified' status for the given reference
-            df.loc[df['Reference'] == reference, 'Verified'] = int(verified)
+            df.loc[df[reference_col] == reference, verified_col] = int(verified)
 
-            # Reformat 'Review Date' for saving to Excel
-            df['Review Date'] = df['Review Date'].dt.strftime('%d/%m/%Y')
+            # Reformat the detected date column for saving to Excel
+            df[date_column] = df[date_column].dt.strftime('%d/%m/%Y')
 
             # Save the updated DataFrame to the Excel file
             df.to_excel(self.excel_file_path, index=False)
@@ -229,11 +281,11 @@ class ReviewApp(QWidget):
             red_fill = PatternFill(start_color='FF0000', end_color='FF0000', fill_type='solid')
 
             # Apply colors to cells based on 'Verified' values
-            for row in ws.iter_rows(min_row=2, min_col=1, max_col=4):  # Adjust min_row as needed if header is present
-                if row[3].value == 1:  # Assuming 'Verified' is in the 4th column
-                    row[3].fill = green_fill
-                elif row[3].value == 0:
-                    row[3].fill = red_fill
+            for row in ws.iter_rows(min_row=2, min_col=1, max_col=len(df.columns)):
+                if row[len(df.columns) - 1].value == 1:  # Assuming 'Verified' is the last column
+                    row[len(df.columns) - 1].fill = green_fill
+                elif row[len(df.columns) - 1].value == 0:
+                    row[len(df.columns) - 1].fill = red_fill
 
             # Save the workbook with formatting
             wb.save(self.excel_file_path)
@@ -246,7 +298,7 @@ class ReviewApp(QWidget):
             print(f"An error occurred while updating the Excel file: {e}")
 
 
-# Run the application
+
 app = QApplication(sys.argv)
 window = ReviewApp()
 window.show()
