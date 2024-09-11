@@ -3,6 +3,8 @@ import os
 import functools
 from PyQt5.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, QLabel, QFileDialog, QComboBox, QTableWidget, QTableWidgetItem, QCheckBox
 from PyQt5.QtCore import Qt
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill
 import sqlite3
 import pandas as pd
 from datetime import datetime
@@ -11,6 +13,7 @@ class ReviewApp(QWidget):
     def __init__(self):
         super().__init__()
         self.excel_file_path = None
+        self.db_path = None  # Store the database path here
         self.setWindowTitle('Product Review Filter')
         self.setGeometry(100, 100, 600, 400)
         
@@ -32,8 +35,43 @@ class ReviewApp(QWidget):
         self.table = QTableWidget()
         layout.addWidget(self.table)
         self.setLayout(layout)
+        
         self.set_current_month()
-        self.clear_table() # Clear the table on initialization
+        self.clear_table()  # Clear the table on initialization
+        self.setup_database()  # Initialize the database
+
+
+
+    def setup_database(self):
+        """Creates the database and the Products table if they don't exist."""
+        app_data_path = os.path.join(os.getenv('LOCALAPPDATA'), 'ReviewApp')
+        os.makedirs(app_data_path, exist_ok=True)  # Create the directory if it doesn't exist
+
+        # Define the full path to the database file
+        self.db_path = os.path.join(app_data_path, 'product_reviews.db')
+
+        if not os.path.exists(self.db_path):
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Create Products table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS Products (
+                product_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_name TEXT NOT NULL,
+                reference TEXT NOT NULL,
+                review_date DATE NOT NULL,
+                verified INTEGER NOT NULL
+            )
+            ''')
+
+            conn.commit()
+            conn.close()
+            print("Database setup complete.")
+        else:
+            print("Database already exists. No setup needed.")
+
+
 
     def set_current_month(self):
         current_month_number = datetime.now().month
@@ -52,10 +90,14 @@ class ReviewApp(QWidget):
         
         if 'Verified' not in df.columns:
             df['Verified'] = False
+        else:
+            df['Verified'] = df['Verified'].fillna(0).astype(int)  # Fill NaN values with 0 and ensure integer type
+
         
         self.excel_file_path = file_path
         
-        conn = sqlite3.connect('product_reviews.db')
+        # Use the correct database path here
+        conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
         cursor.execute('DELETE FROM Products')
@@ -101,7 +143,8 @@ class ReviewApp(QWidget):
         self.display_filtered_products(selected_month)
 
     def display_filtered_products(self, month):
-        conn = sqlite3.connect('product_reviews.db')
+        # Use the correct database path here
+        conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
         if month == 'Select All':
@@ -130,13 +173,13 @@ class ReviewApp(QWidget):
 
             checkbox = QCheckBox()
             checkbox.setChecked(bool(row_data[3]))
-            checkbox.stateChanged.connect(functools.partial(self.update_verification, row_data[1]))
+            checkbox.stateChanged.connect(lambda state, ref=row_data[1]: self.update_verification(ref, state))
             self.table.setCellWidget(row_index, 3, checkbox)
 
     def update_verification(self, reference, state):
         verified = state == Qt.Checked
 
-        with sqlite3.connect('product_reviews.db') as conn:
+        with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute('''
             UPDATE Products
@@ -153,30 +196,54 @@ class ReviewApp(QWidget):
             return
 
         try:
-            df = pd.read_excel(self.excel_file_path)  # Remove dayfirst argument if not using it
+            # Read the Excel file into a DataFrame
+            df = pd.read_excel(self.excel_file_path)
 
             # Convert 'Review Date' to datetime format with dayfirst handling manually
             df['Review Date'] = pd.to_datetime(df['Review Date'], format='%d/%m/%Y', errors='coerce')
-            
-            # Convert 'Verified' column to integer if it's not already
-            if df['Verified'].dtype != 'int64':
-                df['Verified'] = df['Verified'].astype(int)
 
-            # Explicitly cast boolean to integer before assignment
+            # Ensure the 'Verified' column exists and fill missing values with 0
+            if 'Verified' not in df.columns:
+                df['Verified'] = 0  # Create 'Verified' column if it doesn't exist
+            else:
+                df['Verified'] = df['Verified'].fillna(0)  # Fill NaN values with 0
+            
+            # Convert the 'Verified' column to integers safely
+            df['Verified'] = df['Verified'].astype(int)
+
+            # Update the 'Verified' status for the given reference
             df.loc[df['Reference'] == reference, 'Verified'] = int(verified)
 
             # Reformat 'Review Date' for saving to Excel
             df['Review Date'] = df['Review Date'].dt.strftime('%d/%m/%Y')
 
+            # Save the updated DataFrame to the Excel file
             df.to_excel(self.excel_file_path, index=False)
 
+            # Load the workbook to apply formatting
+            wb = load_workbook(self.excel_file_path)
+            ws = wb.active
+
+            # Define colors for verified and not verified
+            green_fill = PatternFill(start_color='00FF00', end_color='00FF00', fill_type='solid')
+            red_fill = PatternFill(start_color='FF0000', end_color='FF0000', fill_type='solid')
+
+            # Apply colors to cells based on 'Verified' values
+            for row in ws.iter_rows(min_row=2, min_col=1, max_col=4):  # Adjust min_row as needed if header is present
+                if row[3].value == 1:  # Assuming 'Verified' is in the 4th column
+                    row[3].fill = green_fill
+                elif row[3].value == 0:
+                    row[3].fill = red_fill
+
+            # Save the workbook with formatting
+            wb.save(self.excel_file_path)
+
             print(f"Excel file {self.excel_file_path} has been updated for reference {reference}.")
-        
+
         except PermissionError as e:
             print(f"Permission error: {e}. Ensure the file is not open and has write permissions.")
         except Exception as e:
             print(f"An error occurred while updating the Excel file: {e}")
-
 
 
 # Run the application
